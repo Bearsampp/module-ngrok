@@ -5,7 +5,7 @@ This is a module of [Neard project](https://github.com/neard/neard) involving ng
 
 ## Documentation and downloads
 
-http://neard.io/modules/ngrok
+https://neard.io/modules/ngrok
 
 ## Issues
 
