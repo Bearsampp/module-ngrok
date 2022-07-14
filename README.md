@@ -5,7 +5,7 @@ This is a module of [Bearsampp project](https://github.com/bearsampp/bearsampp) 
 
 ## Documentation and downloads
 
-https://bearsampp.github.io/modules/ngrok
+https://bearsampp.com/module/ngrok
 
 ## Issues
 
