@@ -1,0 +1,825 @@
+/*
+ * Bearsampp Module Ngrok - Gradle Build
+ *
+ * This is a 100% Gradle build configuration for the Ngrok module,
+ * modeled after the Bruno module (gradle-convert) structure.
+ * It handles downloading (via modules-untouched), staging, and packaging ngrok releases.
+ *
+ * VERSION RESOLUTION STRATEGY:
+ *   1. Remote modules-untouched ngrok.properties (primary source)
+ *      URL: https://github.com/Bearsampp/modules-untouched/blob/main/modules/ngrok.properties
+ *   2. Standard URL format construction (fallback)
+ *
+ * Usage:
+ *   gradle tasks                              - List all available tasks
+ *   gradle release -PbundleVersion=3.19.1     - Build release for specific version
+ *   gradle releaseAll                         - Build all versions
+ *   gradle clean                              - Clean build artifacts
+ *   gradle info                               - Display build information
+ *   gradle verify                             - Verify build environment
+ *   gradle listVersions                       - List available versions
+ *   gradle listReleases                       - List releases from modules-untouched
+ *   gradle checkModulesUntouched              - Check modules-untouched integration
+ */
+
+plugins {
+    id 'base'
+}
+
+import java.util.regex.Pattern
+
+// ============================================================================
+// PROJECT CONFIGURATION
+// ============================================================================
+
+// Load build properties
+def buildProps = new Properties()
+file('build.properties').withInputStream { buildProps.load(it) }
+
+// Project information
+group = 'com.bearsampp.modules'
+version = buildProps.getProperty('bundle.release', new Date().format('yyyy.MM.dd'))
+description = "Bearsampp Module - ${buildProps.getProperty('bundle.name', 'ngrok')}"
+
+// Define project paths
+ext {
+    projectBasedir = projectDir.absolutePath
+    rootDir = projectDir.parent
+    devPath = file("${rootDir}/dev").absolutePath
+
+    // Bundle properties from build.properties
+    bundleName = buildProps.getProperty('bundle.name', 'ngrok')
+    bundleRelease = buildProps.getProperty('bundle.release', new Date().format('yyyy.MM.dd'))
+    bundleType = buildProps.getProperty('bundle.type', 'tools')
+    bundleFormat = buildProps.getProperty('bundle.format', '7z')
+
+    // Build paths - with configurable base path
+    // Priority: 1) build.properties, 2) Environment variable, 3) Default
+    def buildPathFromProps = buildProps.getProperty('build.path', '').trim()
+    def buildPathFromEnv = System.getenv('BEARSAMPP_BUILD_PATH') ?: ''
+    def defaultBuildPath = "${rootDir}/bearsampp-build"
+
+    buildBasePath = buildPathFromProps ?: (buildPathFromEnv ?: defaultBuildPath)
+
+    // Use shared bearsampp-build/tmp directory structure (same as Ant builds)
+    buildTmpPath = file("${buildBasePath}/tmp").absolutePath
+    bundleTmpBuildPath = file("${buildTmpPath}/bundles_build/${bundleType}/${bundleName}").absolutePath
+    bundleTmpPrepPath = file("${buildTmpPath}/bundles_prep/${bundleType}/${bundleName}").absolutePath
+    bundleTmpSrcPath = file("${buildTmpPath}/bundles_src").absolutePath
+
+    // Download and extract paths - use bearsampp-build/tmp instead of local build/
+    bundleTmpDownloadPath = file("${buildTmpPath}/downloads/${bundleName}").absolutePath
+    bundleTmpExtractPath = file("${buildTmpPath}/extract/${bundleName}").absolutePath
+}
+
+// Verify dev path exists
+if (!file(ext.devPath).exists()) {
+    throw new RuntimeException("Dev path not found: ${ext.devPath}. Please ensure the 'dev' project exists in ${ext.rootDir}")
+}
+
+// Configure repositories (kept for completeness)
+repositories { mavenCentral() }
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+// Helper: parse simple properties file (key=value, optional spaces, # comments)
+static Map<String, String> readSimpleProps(File f) {
+    def map = [:]
+    if (!f.exists()) return map
+    f.eachLine('UTF-8') { line ->
+        def t = line.trim()
+        if (!t || t.startsWith('#')) return
+        int i = t.indexOf('=')
+        if (i <= 0) return
+        def k = t.substring(0, i).trim()
+        def v = t.substring(i + 1).trim()
+        if (k) map[k] = v
+    }
+    map
+}
+
+// Function to fetch ngrok.properties from modules-untouched repository (primary source)
+def fetchModulesUntouchedProperties() {
+    def propsUrl = "https://raw.githubusercontent.com/Bearsampp/modules-untouched/main/modules/ngrok.properties"
+
+    // Align messaging with MySQL module (ASCII only)
+    println "Checking modules-untouched repository..."
+    println "  URL: ${propsUrl}"
+
+    def tempFile = file("${bundleTmpDownloadPath}/ngrok-untouched.properties")
+    tempFile.parentFile.mkdirs()
+
+    try {
+        new URL(propsUrl).withInputStream { input ->
+            tempFile.withOutputStream { output ->
+                output << input
+            }
+        }
+
+        def props = new Properties()
+        tempFile.withInputStream { props.load(it) }
+
+        // Use plain ASCII to avoid console encoding issues on Windows (no special symbols)
+        println "  Successfully loaded ${props.size()} versions from modules-untouched"
+        return props
+    } catch (Exception e) {
+        // Use plain ASCII for warnings as well (avoid special symbols)
+        println "  Warning: Could not fetch ngrok.properties from modules-untouched: ${e.message}"
+        println "  Will fall back to standard URL format if needed"
+        return null
+    }
+}
+
+// Function to construct a fallback URL when version is not in properties
+def constructFallbackUrl(String version) {
+    // Generic fallback location pattern for modules-untouched (adjust if needed)
+    // Prefer .zip as a commonly supported container; some ngrok versions may be plain .exe.
+    // We'll try .zip first, then .7z as another option.
+    return [
+        "https://github.com/Bearsampp/modules-untouched/releases/download/ngrok-${version}/ngrok-${version}-win64.zip",
+        "https://github.com/Bearsampp/modules-untouched/releases/download/ngrok-${version}/ngrok-${version}-win64.7z",
+    ]
+}
+
+// Function to build additional candidates for legacy v2 artifacts under modules-untouched
+def v2Candidates(String version) {
+    // Release tags sometimes differ; try both specific and r1 tag pattern
+    def tags = [
+        "ngrok-${version}",
+        'ngrok-r1'
+    ]
+    def names = [
+        "ngrok_windows_amd64_${version}.zip",
+        "ngrok_windows_amd64_${version}.7z",
+        "ngrok_windows_amd64_${version}.exe",
+        "ngrok_windows_386_${version}.zip",
+        "ngrok_windows_386_${version}.7z",
+        "ngrok_windows_386_${version}.exe",
+        // Alternate hyphen style
+        "ngrok-windows-amd64-${version}.zip",
+        "ngrok-windows-amd64-${version}.7z",
+        "ngrok-windows-amd64-${version}.exe",
+        "ngrok-windows-386-${version}.zip",
+        "ngrok-windows-386-${version}.7z",
+        "ngrok-windows-386-${version}.exe"
+    ]
+    def list = []
+    tags.each { t ->
+        names.each { n ->
+            list << "https://github.com/Bearsampp/modules-untouched/releases/download/${t}/${n}"
+        }
+    }
+    return list
+}
+
+// Function to pick URL(s) for a given version (ordered by preference)
+def resolveNgrokUrl(String version) {
+    // Manual overrides first
+    def overrideUrl = (project.findProperty('ngrokUrl') as String) ?: System.getenv('NGROK_DOWNLOAD_URL')
+    if (overrideUrl?.trim()) {
+        println "Using override URL for ngrok: ${overrideUrl}"
+        return [overrideUrl.trim()]
+    }
+
+    def urls = [] as List<String>
+    def untouchedProps = fetchModulesUntouchedProperties()
+    if (untouchedProps) {
+        def direct = untouchedProps.getProperty(version)
+        if (direct) {
+            println "Found version ${version} in modules-untouched ngrok.properties"
+            urls << direct
+        }
+        // Try reduced keys: major.minor then major
+        def parts = version.split('\\.')
+        if (parts.length >= 2) {
+            def mm = parts[0] + '.' + parts[1]
+            def v = untouchedProps.getProperty(mm)
+            if (v) urls << v
+        }
+        if (parts.length >= 1) {
+            def m = parts[0]
+            def v = untouchedProps.getProperty(m)
+            if (v) urls << v
+        }
+    }
+    // If version is 2.x, append a richer set of candidates known to exist historically
+    if (version?.trim()?.startsWith('2.')) {
+        urls.addAll(v2Candidates(version))
+    }
+    // Generic fallback(s)
+    urls.addAll(constructFallbackUrl(version))
+    // De-duplicate while preserving order
+    def seen = new HashSet<String>()
+    def ordered = [] as List<String>
+    urls.each { u -> if (u && seen.add(u)) ordered << u }
+    return ordered
+}
+
+// Download a URL to destination directory, returns File
+def downloadTo(File destDir, String url) {
+    destDir.mkdirs()
+    def filename = url.substring(url.lastIndexOf('/') + 1)
+    def outFile = file("${destDir}/${filename}")
+    println "Downloading from:"
+    println "  ${url}"
+    println "  Downloading to: ${outFile}"
+
+    // Small retry loop with backoff
+    int attempts = 0
+    Exception last
+    while (attempts < 3) {
+        attempts++
+        try {
+            def conn = new URL(url).openConnection()
+            conn.setRequestProperty('User-Agent', 'Bearsampp-Gradle/1.0 (+https://bearsampp.com)')
+            conn.setConnectTimeout(15000)
+            conn.setReadTimeout(60000)
+            conn.instanceFollowRedirects = true
+            conn.getInputStream().withStream { input ->
+                outFile.withOutputStream { output ->
+                    def buf = new byte[8192]
+                    int r
+                    while ((r = input.read(buf)) != -1) {
+                        output.write(buf, 0, r)
+                    }
+                }
+            }
+            if (!outFile.exists() || outFile.length() == 0L) {
+                throw new IOException("Downloaded file is empty: ${outFile}")
+            }
+            if (url.contains("modules-untouched")) {
+                println "  Download complete from modules-untouched"
+            } else {
+                println "  Download complete"
+            }
+            return outFile
+        } catch (Exception e) {
+            last = e
+            println "  Attempt ${attempts} failed: ${e.message}"
+            if (attempts < 3) {
+                sleep(700L * attempts)
+            }
+        }
+    }
+    throw new RuntimeException("Failed to download ${url}: ${last?.message ?: 'unknown error'}")
+}
+
+// Helper function to find 7-Zip executable
+def find7ZipExecutable() {
+    def sevenZipHome = System.getenv('7Z_HOME')
+    if (sevenZipHome) {
+        def exe = file("${sevenZipHome}/7z.exe")
+        if (exe.exists()) return exe.absolutePath
+    }
+    def commonPaths = [
+        'C:/Program Files/7-Zip/7z.exe',
+        'C:/Program Files (x86)/7-Zip/7z.exe',
+        'D:/Program Files/7-Zip/7z.exe',
+        'D:/Program Files (x86)/7-Zip/7z.exe'
+    ]
+    for (p in commonPaths) {
+        def exe = file(p)
+        if (exe.exists()) return exe.absolutePath
+    }
+    try {
+        def proc = ['where', '7z.exe'].execute()
+        proc.waitFor()
+        if (proc.exitValue() == 0) {
+            def out = proc.text.trim()
+            if (out) return out.split('\n')[0].trim()
+        }
+    } catch (ignored) {}
+    return null
+}
+
+// Helper function to calculate hash
+def calculateHash(File file, String algorithm) {
+    def digest = java.security.MessageDigest.getInstance(algorithm)
+    file.withInputStream { stream ->
+        def buffer = new byte[8192]
+        int bytesRead
+        while ((bytesRead = stream.read(buffer)) != -1) {
+            digest.update(buffer, 0, bytesRead)
+        }
+    }
+    return digest.digest().collect { String.format('%02x', it) }.join('')
+}
+
+// Helper function to generate hash files
+def generateHashFiles(File file) {
+    if (!file.exists()) throw new RuntimeException("File not found for hashing: ${file}")
+    // Calculate hashes
+    def md5    = calculateHash(file, 'MD5')
+    def sha1   = calculateHash(file, 'SHA-1')
+    def sha256 = calculateHash(file, 'SHA-256')
+    def sha512 = calculateHash(file, 'SHA-512')
+
+    // Write hash files (same content style as other modules)
+    def md5File    = new File("${file.absolutePath}.md5")
+    def sha1File   = new File("${file.absolutePath}.sha1")
+    def sha256File = new File("${file.absolutePath}.sha256")
+    def sha512File = new File("${file.absolutePath}.sha512")
+
+    md5File.text    = "${md5} ${file.name}\n"
+    sha1File.text   = "${sha1} ${file.name}\n"
+    sha256File.text = "${sha256} ${file.name}\n"
+    sha512File.text = "${sha512} ${file.name}\n"
+
+    // Display created hash file paths and values (mirrors gradle-convert style)
+    println "  MD5    (${md5File.name}):    ${md5}"
+    println "  SHA1   (${sha1File.name}):   ${sha1}"
+    println "  SHA256 (${sha256File.name}): ${sha256}"
+    println "  SHA512 (${sha512File.name}): ${sha512}"
+    println "  Hash files written to:"
+    println "    - ${md5File.absolutePath}"
+    println "    - ${sha1File.absolutePath}"
+    println "    - ${sha256File.absolutePath}"
+    println "    - ${sha512File.absolutePath}"
+}
+
+// Find available versions in bin and bin/archived
+def getAvailableVersions() {
+    def versions = []
+    def binDir = file("${projectDir}/bin")
+    if (binDir.exists()) {
+        versions.addAll(
+            binDir.listFiles()
+                ?.findAll { it.isDirectory() && it.name.startsWith(bundleName) && it.name != 'archived' }
+                ?.collect { it.name.replace(bundleName, '') } ?: []
+        )
+    }
+    def archivedDir = file("${projectDir}/bin/archived")
+    if (archivedDir.exists()) {
+        versions.addAll(
+            archivedDir.listFiles()
+                ?.findAll { it.isDirectory() && it.name.startsWith(bundleName) }
+                ?.collect { it.name.replace(bundleName, '') } ?: []
+        )
+    }
+    return versions.unique().sort { a, b ->
+        // simple semantic-ish compare
+        def ap = a.tokenize('.')*.toInteger()
+        def bp = b.tokenize('.')*.toInteger()
+        int n = Math.max(ap.size(), bp.size())
+        for (int i=0;i<n;i++) {
+            int x = i<ap.size()?ap[i]:0
+            int y = i<bp.size()?bp[i]:0
+            if (x!=y) return x<=>y
+        }
+        0
+    }
+}
+
+// Download and (if needed) extract ngrok for a given version, return source directory containing ngrok.exe
+def downloadAndPrepareNgrok(String version) {
+    // 0) Allow a local override for the ngrok.exe path
+    def localExePath = (project.findProperty('ngrokLocalExe') as String) ?: System.getenv('NGROK_EXE_PATH')
+    if (localExePath?.trim()) {
+        def src = file(localExePath.trim())
+        if (!src.exists()) throw new RuntimeException("NGROK_EXE_PATH / -PngrokLocalExe not found: ${src}")
+        def extractBase0 = file(bundleTmpExtractPath)
+        extractBase0.mkdirs()
+        def extractPath0 = file("${extractBase0}/${version}")
+        if (extractPath0.exists()) project.delete(extractPath0)
+        extractPath0.mkdirs()
+        copy { from src; into extractPath0; rename { 'ngrok.exe' } }
+        println "  Using local ngrok.exe from: ${src}"
+        return extractPath0
+    }
+
+    def urls = resolveNgrokUrl(version)
+    def dlDir = file(bundleTmpDownloadPath)
+    File downloaded = null
+    def lastErr = null
+    for (u in urls) {
+        try {
+            downloaded = downloadTo(dlDir, u)
+            break
+        } catch (Exception e) {
+            lastErr = e
+        }
+    }
+    if (!downloaded) {
+        throw new RuntimeException("Failed to download ngrok for version ${version}: ${lastErr?.message ?: 'no URL succeeded'}")
+    }
+
+    // If it's an archive, extract; if it's .exe, use parent as source
+    def extractBase = file(bundleTmpExtractPath)
+    extractBase.mkdirs()
+    def extractPath = file("${extractBase}/${version}")
+    if (extractPath.exists()) project.delete(extractPath)
+    extractPath.mkdirs()
+
+    def name = downloaded.name.toLowerCase()
+    if (name.endsWith('.7z')) {
+        def sevenZip = find7ZipExecutable()
+        if (!sevenZip) throw new RuntimeException("7zip not found to extract ${downloaded.name}. Install 7-Zip or provide a .zip/.exe.")
+        def cmd = [sevenZip, 'x', downloaded.absolutePath.toString(), "-o${extractPath.absolutePath}".toString(), '-y']
+        def proc = new ProcessBuilder(cmd as String[]).directory(extractPath).redirectErrorStream(true).start()
+        proc.inputStream.eachLine { if (it?.trim()) println "    ${it}" }
+        def code = proc.waitFor()
+        if (code != 0) throw new RuntimeException("7zip extraction failed with exit code ${code}")
+    } else if (name.endsWith('.zip')) {
+        copy { from zipTree(downloaded); into extractPath }
+    } else if (name.endsWith('.exe')) {
+        // place the exe into extractPath
+        copy { from downloaded; into extractPath; rename { 'ngrok.exe' } }
+    } else {
+        // Unknown; attempt to place as ngrok.exe
+        copy { from downloaded; into extractPath; rename { 'ngrok.exe' } }
+    }
+
+    // Find directory that contains ngrok.exe
+    def hasExe = { File d -> new File(d, 'ngrok.exe').exists() }
+    if (hasExe(extractPath)) return extractPath
+    File found = null
+    def stack = new ArrayDeque<File>()
+    extractPath.listFiles()?.findAll { it.isDirectory() }?.each { stack.push(it) }
+    while (!stack.isEmpty() && found == null) {
+        def d = stack.pop()
+        if (hasExe(d)) { found = d; break }
+        d.listFiles()?.findAll { it.isDirectory() }?.each { stack.push(it) }
+    }
+    if (found) return found
+    throw new RuntimeException("Could not find ngrok.exe after extraction for version ${version}")
+}
+
+// ============================================================================
+// GRADLE TASKS
+// ============================================================================
+
+// Task: Display build information
+tasks.register('info') {
+    group = 'help'
+    description = 'Display build configuration information'
+
+    def projectName = project.name
+    def projectVersion = project.version
+    def projectDescription = project.description
+    def projectBasedirValue = projectBasedir
+    def rootDirValue = rootDir
+    def devPathValue = devPath
+    def bundleNameValue = bundleName
+    def bundleReleaseValue = bundleRelease
+    def bundleTypeValue = bundleType
+    def bundleFormatValue = bundleFormat
+    def buildBasePathValue = buildBasePath
+    def buildTmpPathValue = buildTmpPath
+    def bundleTmpPrepPathValue = bundleTmpPrepPath
+    def bundleTmpBuildPathValue = bundleTmpBuildPath
+    def bundleTmpSrcPathValue = bundleTmpSrcPath
+    def bundleTmpDownloadPathValue = bundleTmpDownloadPath
+    def bundleTmpExtractPathValue = bundleTmpExtractPath
+    def javaVersion = JavaVersion.current()
+    def javaHome = System.getProperty('java.home')
+    def gradleVersion = gradle.gradleVersion
+    def gradleHome = gradle.gradleHomeDir
+
+    doLast {
+        println """
+        ================================================================
+                  Bearsampp Module Ngrok - Build Info
+        ================================================================
+
+        Project:        ${projectName}
+        Version:        ${projectVersion}
+        Description:    ${projectDescription}
+
+        Bundle Properties:
+          Name:         ${bundleNameValue}
+          Release:      ${bundleReleaseValue}
+          Type:         ${bundleTypeValue}
+          Format:       ${bundleFormatValue}
+
+        Paths:
+          Project Dir:  ${projectBasedirValue}
+          Root Dir:     ${rootDirValue}
+          Dev Path:     ${devPathValue}
+          Build Base:   ${buildBasePathValue}
+          Build Tmp:    ${buildTmpPathValue}
+          Tmp Prep:     ${bundleTmpPrepPathValue}
+          Tmp Build:    ${bundleTmpBuildPathValue}
+          Tmp Src:      ${bundleTmpSrcPathValue}
+          Tmp Download: ${bundleTmpDownloadPathValue}
+          Tmp Extract:  ${bundleTmpExtractPathValue}
+
+        Java:
+          Version:      ${javaVersion}
+          Home:         ${javaHome}
+
+        Gradle:
+          Version:      ${gradleVersion}
+          Home:         ${gradleHome}
+
+        Quick Start:
+          gradle tasks                              - List all available tasks
+          gradle info                               - Show this information
+          gradle release -PbundleVersion=3.19.1     - Build specific version
+          gradle releaseAll                         - Build all versions
+          gradle clean                              - Clean build artifacts
+          gradle verify                             - Verify build environment
+        """.stripIndent()
+    }
+}
+
+// Task: Main release task - build a specific version
+tasks.register('release') {
+    group = 'build'
+    description = 'Build release package for a specific version (use -PbundleVersion=X.X.X or run interactively)'
+
+    def versionProperty = project.findProperty('bundleVersion')
+
+    doLast {
+        def versionToBuild = versionProperty
+
+        if (!versionToBuild) {
+            def availableVersions = getAvailableVersions()
+            if (availableVersions.isEmpty()) throw new RuntimeException("No versions found in bin/ directory")
+
+            println ""; println "=".multiply(70); println "Interactive Release Mode"; println "=".multiply(70); println ""
+            println "Available versions:"
+
+            def binDir = file("${projectDir}/bin")
+            def archivedDir = file("${projectDir}/bin/archived")
+
+            availableVersions.eachWithIndex { v, idx ->
+                def location = ""
+                if (binDir.exists() && file("${binDir}/${bundleName}${v}").exists()) location = "[bin]"
+                else if (archivedDir.exists() && file("${archivedDir}/${bundleName}${v}").exists()) location = "[bin/archived]"
+                println "  ${(idx + 1).toString().padLeft(2)}. ${v.padRight(15)} ${location}"
+            }
+            println "\nEnter version to build (index or version string):\n"
+
+            def input = null
+            try {
+                input = new BufferedReader(new InputStreamReader(System.in)).readLine()
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to read input. Use: gradle release -PbundleVersion=X.X.X")
+            }
+            if (!input || input.trim().isEmpty()) throw new RuntimeException("No version selected. Use: gradle release -PbundleVersion=X.X.X")
+            def cleaned = input.trim()
+            if (cleaned.isInteger()) {
+                def idx = cleaned.toInteger()
+                if (idx < 1 || idx > availableVersions.size()) throw new RuntimeException("Invalid selection index: ${cleaned}")
+                versionToBuild = availableVersions[idx - 1]
+            } else {
+                versionToBuild = cleaned
+                if (!availableVersions.contains(versionToBuild)) throw new RuntimeException("Invalid version: ${versionToBuild}")
+            }
+            println "\nSelected version: ${versionToBuild}"
+        }
+
+        println "\n" + "=".multiply(70)
+        println "Building ${bundleName} ${versionToBuild}"
+        println "=".multiply(70) + "\n"
+
+        def bundlePath = file("${projectDir}/bin/${bundleName}${versionToBuild}")
+        if (!bundlePath.exists()) {
+            bundlePath = file("${projectDir}/bin/archived/${bundleName}${versionToBuild}")
+            if (!bundlePath.exists()) throw new RuntimeException("Bundle version not found in bin/ or bin/archived/")
+        }
+
+        println "Bundle path: ${bundlePath}\n"
+
+        def bundleFolder = bundlePath.name
+        def bundleVersionLocal = bundleFolder.replace(bundleName, '')
+
+        // Determine source paths
+        def bundleSrcDest = bundlePath
+        def bundleSrcFinal = bundleSrcDest
+
+        // If ngrok.exe is not present, download/prepare it to bearsampp-build/tmp
+        def ngrokExe = file("${bundleSrcFinal}/ngrok.exe")
+        if (!ngrokExe.exists()) {
+            println "\nNgrok binary not found in bin. Downloading Ngrok ${bundleVersionLocal}...\n"
+            bundleSrcFinal = downloadAndPrepareNgrok(bundleVersionLocal)
+        }
+
+        // Verify ngrok.exe exists
+        ngrokExe = file("${bundleSrcFinal}/ngrok.exe")
+        if (!ngrokExe.exists()) throw new RuntimeException("ngrok.exe not found at ${ngrokExe}")
+
+        println "Source folder: ${bundleSrcFinal}\n"
+
+        // Prepare output directory: tmp prep contains version folder
+        def prepPath = file("${bundleTmpPrepPath}/${bundleName}${bundleVersionLocal}")
+        if (prepPath.exists()) delete prepPath
+        prepPath.mkdirs()
+
+        // Copy downloaded/extracted files first
+        copy { from bundleSrcFinal; into prepPath }
+        // Overlay files from bin bundle directory (mirror Ant behavior)
+        copy { from bundleSrcDest; into prepPath }
+
+        // Copy to bundles_build (non-zip version for quick inspection)
+        def buildCopyPath = file("${bundleTmpBuildPath}/${bundleName}${bundleVersionLocal}")
+        if (buildCopyPath.exists()) delete buildCopyPath
+        buildCopyPath.mkdirs()
+        copy { from prepPath; into buildCopyPath }
+        println "Non-zip version available at: ${buildCopyPath}"
+
+        println "\nPreparing archive..."
+        def buildPath = file(buildBasePath)
+        def outDir = file("${buildPath}/${bundleType}/${bundleName}/${bundleRelease}")
+        outDir.mkdirs()
+        def baseName = "bearsampp-${bundleName}-${bundleVersionLocal}-${bundleRelease}"
+        def ext = (bundleFormat == '7z') ? '7z' : 'zip'
+        println "  Format: ${ext}"
+        println "  Output: ${outDir}\\${baseName}.${ext}"
+        println "Compressing ${bundleName}${bundleVersionLocal} to ${baseName}.${ext}..."
+
+        File archiveFile
+        if (bundleFormat == '7z') {
+            archiveFile = file("${outDir}/${baseName}.7z")
+            if (archiveFile.exists()) delete archiveFile
+            def sevenZipExe = find7ZipExecutable()
+            if (!sevenZipExe) throw new RuntimeException("7-Zip not found. Install 7-Zip or set 7Z_HOME.")
+            def cmd = [sevenZipExe, 'a', '-t7z', archiveFile.absolutePath.toString(), "${bundleName}${bundleVersionLocal}"]
+            def proc = new ProcessBuilder(cmd as String[]).directory(file(bundleTmpPrepPath)).redirectErrorStream(true).start()
+            proc.inputStream.eachLine { if (it?.trim()) println "  ${it}" }
+            def code = proc.waitFor()
+            if (code != 0) throw new RuntimeException("7zip compression failed with exit code: ${code}")
+            println "Archive created: ${archiveFile}"
+            println "Generating hash files..."
+            generateHashFiles(archiveFile)
+        } else {
+            archiveFile = file("${outDir}/${baseName}.zip")
+            if (archiveFile.exists()) delete archiveFile
+            // Ensure version folder at archive root
+            task("zipArchive_${bundleVersionLocal}", type: Zip) {
+                from(prepPath) { into "${bundleName}${bundleVersionLocal}" }
+                destinationDirectory = archiveFile.parentFile
+                archiveFileName = archiveFile.name
+            }.execute()
+            println "Archive created: ${archiveFile}"
+            println "Generating hash files..."
+            generateHashFiles(archiveFile)
+        }
+
+        println "\n" + "=".multiply(70)
+        println "[SUCCESS] Release build completed successfully for version ${versionToBuild}"
+        println "Output directory: ${buildCopyPath}"
+        println "Archive: ${archiveFile}"
+        println "=".multiply(70)
+    }
+}
+
+// Task: Build all available versions (staging only, no archive to speed up)
+tasks.register('releaseAll') {
+    group = 'build'
+    description = 'Build release packages for all available versions in bin/ directory'
+    doLast {
+        def binDir = file("${projectDir}/bin")
+        if (!binDir.exists()) throw new RuntimeException("bin/ directory not found")
+        def versions = getAvailableVersions()
+        if (versions.isEmpty()) throw new RuntimeException("No versions found in bin/ directory")
+
+        println "\n" + "=".multiply(70)
+        println "Building releases for ${versions.size()} ${bundleName} versions"
+        println "=".multiply(70) + "\n"
+
+        def success = 0
+        def failed = []
+        versions.each { v ->
+            try {
+                def bundlePath = file("${projectDir}/bin/${bundleName}${v}")
+                if (!bundlePath.exists()) throw new RuntimeException("Bundle path not found: ${bundlePath}")
+                def prepPath = file("${bundleTmpPrepPath}/${bundleName}${v}")
+                if (prepPath.exists()) delete prepPath
+                prepPath.mkdirs()
+                copy { from bundlePath; into prepPath }
+                println "[SUCCESS] ${bundleName} ${v} staged at ${prepPath}"
+                success++
+            } catch (Exception e) {
+                println "[FAILED] ${bundleName} ${v}: ${e.message}"
+                failed << v
+            }
+        }
+        println "\nSummary: total=${versions.size()} success=${success} failed=${failed.size()}"
+        if (!failed.isEmpty()) throw new RuntimeException("${failed.size()} version(s) failed: ${failed.join(', ')}")
+    }
+}
+
+// Task: Enhanced clean task
+tasks.named('clean') {
+    group = 'build'
+    description = 'Clean build artifacts and temporary files'
+    doLast {
+        def buildDirLocal = file("${projectDir}/build")
+        if (buildDirLocal.exists()) delete buildDirLocal
+        println "[SUCCESS] Build artifacts cleaned"
+    }
+}
+
+// Task: Verify build environment
+tasks.register('verify') {
+    group = 'verification'
+    description = 'Verify build environment and dependencies'
+    doLast {
+        println "Verifying build environment for module-ngrok..."
+        def checks = [:]
+        checks['Java 8+'] = JavaVersion.current() >= JavaVersion.VERSION_1_8
+        checks['build.properties'] = file('build.properties').exists()
+        checks['dev directory'] = file(devPath).exists()
+        checks['bin directory'] = file("${projectDir}/bin").exists()
+        if (bundleFormat == '7z') checks['7-Zip'] = find7ZipExecutable() != null
+        println "\nEnvironment Check Results:\n" + "-".multiply(60)
+        checks.each { k, v -> println "  ${(v ? '[PASS]' : '[FAIL]').padRight(10)} ${k}" }
+        println "-".multiply(60)
+        if (!checks.values().every { it }) throw new RuntimeException("Build environment verification failed")
+        println "\n[SUCCESS] All checks passed!"
+    }
+}
+
+// Task: List all bundle versions from modules-untouched ngrok.properties
+tasks.register('listReleases') {
+    group = 'help'
+    description = 'List all available releases from modules-untouched ngrok.properties'
+    doLast {
+        def props = fetchModulesUntouchedProperties()
+        if (!props) { println "\n[WARNING] Could not fetch modules-untouched ngrok.properties."; return }
+        println "\nAvailable Ngrok Releases (modules-untouched):\n" + "-".multiply(80)
+        props.sort { a, b -> a.key <=> b.key }.each { version, url -> println "  ${version.padRight(10)} -> ${url}" }
+        println "-".multiply(80)
+        println "Total releases: ${props.size()}"
+    }
+}
+
+// Task: List available bundle versions in bin and bin/archived directories
+tasks.register('listVersions') {
+    group = 'help'
+    description = 'List all available bundle versions in bin/ and bin/archived/ directories'
+    doLast {
+        def versions = getAvailableVersions()
+        if (versions.isEmpty()) { println "\nNo versions found in bin/ or bin/archived/ directories"; return }
+        println "\nAvailable ${bundleName} versions:\n" + "-".multiply(60)
+        def binDir = file("${projectDir}/bin")
+        def archivedDir = file("${projectDir}/bin/archived")
+        versions.each { v ->
+            def location = ''
+            if (binDir.exists() && file("${binDir}/${bundleName}${v}").exists()) location = '[bin]'
+            else if (archivedDir.exists() && file("${archivedDir}/${bundleName}${v}").exists()) location = '[bin/archived]'
+            println "  ${v.padRight(15)} ${location}"
+        }
+        println "-".multiply(60)
+        println "Total versions: ${versions.size()}\n\nTo build a specific version:\n  gradle release -PbundleVersion=${versions.last()}"
+    }
+}
+
+// Task: Validate build.properties
+tasks.register('validateProperties') {
+    group = 'verification'
+    description = 'Validate build.properties configuration'
+    doLast {
+        println "Validating build.properties..."
+        def required = ['bundle.name', 'bundle.release', 'bundle.type', 'bundle.format']
+        def missing = []
+        required.each { prop -> if (!buildProps.containsKey(prop) || buildProps.getProperty(prop).trim().isEmpty()) missing << prop }
+        if (!missing.isEmpty()) { println "[ERROR] Missing required properties:\n  - ${missing.join('\n  - ')}"; throw new RuntimeException('build.properties validation failed') }
+        println "[SUCCESS] All required properties are present.";
+        required.each { prop -> println "    ${prop} = ${buildProps.getProperty(prop)}" }
+    }
+}
+
+// Task: Check modules-untouched integration
+tasks.register('checkModulesUntouched') {
+    group = 'verification'
+    description = 'Check modules-untouched repository integration and available versions'
+    doLast {
+        println "\n" + "=".multiply(70)
+        println "Modules-Untouched Integration Check"
+        println "=".multiply(70) + "\n"
+        def propsUrl = "https://raw.githubusercontent.com/Bearsampp/modules-untouched/main/modules/ngrok.properties"
+        println "Repository URL:\n  ${propsUrl}\n"
+        def untouchedProps = fetchModulesUntouchedProperties()
+        if (untouchedProps) {
+            println "Available Versions (modules-untouched):"
+            def sorted = untouchedProps.sort { a, b -> a.key <=> b.key }
+            sorted.each { version, url -> println "  ${version.padRight(10)}" }
+            println "\n[SUCCESS] modules-untouched integration is working"
+            println "\nVersion Resolution Strategy:\n  1. Check modules-untouched ngrok.properties (remote)\n  2. Construct standard URL format (fallback)"
+        } else {
+            println "[WARNING] Could not fetch ngrok.properties from modules-untouched. Will rely on fallback URL construction."
+        }
+    }
+}
+
+// ============================================================================
+// BUILD LIFECYCLE HOOKS
+// ============================================================================
+
+gradle.taskGraph.whenReady { graph ->
+    println """
+    ================================================================
+      Bearsampp Module Ngrok - Gradle Build
+    ================================================================
+    """.stripIndent()
+}
+
+// ============================================================================
+// DEFAULT TASK
+// ============================================================================
+
+defaultTasks 'info'
