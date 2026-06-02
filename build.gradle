@@ -358,17 +358,20 @@ def getAvailableVersions() {
                 ?.collect { it.name.replace(bundleName, '') } ?: []
         )
     }
+// Remove duplicates and sort semantically
     return versions.unique().sort { a, b ->
-        // simple semantic-ish compare
-        def ap = a.tokenize('.')*.toInteger()
-        def bp = b.tokenize('.')*.toInteger()
-        int n = Math.max(ap.size(), bp.size())
-        for (int i=0;i<n;i++) {
-            int x = i<ap.size()?ap[i]:0
-            int y = i<bp.size()?bp[i]:0
-            if (x!=y) return x<=>y
+        def aParts = a.tokenize('.').collect { it.isInteger() ? it.toInteger() : it }
+        def bParts = b.tokenize('.').collect { it.isInteger() ? it.toInteger() : it }
+        for (int i = 0; i < Math.max(aParts.size(), bParts.size()); i++) {
+            def aVal = i < aParts.size() ? aParts[i] : 0
+            def bVal = i < bParts.size() ? bParts[i] : 0
+            if (aVal.getClass() != bVal.getClass()) {
+                aVal = aVal.toString()
+                bVal = bVal.toString()
+            }
+            if (aVal != bVal) return aVal <=> bVal
         }
-        0
+        return 0
     }
 }
 
@@ -796,7 +799,22 @@ tasks.register('checkModulesUntouched') {
         def untouchedProps = fetchModulesUntouchedProperties()
         if (untouchedProps) {
             println "Available Versions (modules-untouched):"
-            def sorted = untouchedProps.sort { a, b -> a.key <=> b.key }
+            def sorted = untouchedProps.sort { a, b ->
+                def aKey = a.key.toString()
+                def bKey = b.key.toString()
+                def aParts = aKey.tokenize('.').collect { it.isInteger() ? it.toInteger() : it }
+                def bParts = bKey.tokenize('.').collect { it.isInteger() ? it.toInteger() : it }
+                for (int i = 0; i < Math.max(aParts.size(), bParts.size()); i++) {
+                    def aVal = i < aParts.size() ? aParts[i] : 0
+                    def bVal = i < bParts.size() ? bParts[i] : 0
+                    if (aVal.getClass() != bVal.getClass()) {
+                        aVal = aVal.toString()
+                        bVal = bVal.toString()
+                    }
+                    if (aVal != bVal) return aVal <=> bVal
+                }
+                return 0
+            }
             sorted.each { version, url -> println "  ${version.padRight(10)}" }
             println "\n[SUCCESS] modules-untouched integration is working"
             println "\nVersion Resolution Strategy:\n  1. Check modules-untouched ngrok.properties (remote)\n  2. Construct standard URL format (fallback)"
