@@ -19,7 +19,7 @@
   </defs>
   <rect class="bg" x="0" y="0" width="1000" height="360" rx="16" />
   <text class="title" x="64" y="34">Bearsampp/module-ngrok release downloads</text>
-  <text class="sub" x="64" y="352">Generated 2026-10-27</text>
+  <text class="sub" x="64" y="352">Generated 2026-10-28</text>
   <line x1="64" y1="52.00" x2="976" y2="52.00" class="grid"/>
   <text x="56" y="56.00" text-anchor="end" class="axis">127</text>
   <line x1="64" y1="94.00" x2="976" y2="94.00" class="grid"/>
@@ -34,17 +34,15 @@
   <text x="56" y="266.00" text-anchor="end" class="axis">21</text>
   <line x1="64" y1="304.00" x2="976" y2="304.00" class="grid"/>
   <text x="56" y="308.00" text-anchor="end" class="axis">0</text>
-  <path d="M 64.00 304 L 64.00 304.00 L 112.00 304.00 L 160.00 300.03 L 208.00 300.03 L 256.00 298.05 L 304.00 296.06 L 352.00 282.17 L 400.00 272.25 L 448.00 272.25 L 496.00 272.25 L 544.00 272.25 L 592.00 272.25 L 640.00 270.27 L 688.00 190.90 L 736.00 190.90 L 784.00 190.90 L 832.00 188.91 L 880.00 186.93 L 928.00 107.56 L 976.00 52.00 L 976.00 304 Z" fill="url(#fill-monthly-black)"/>
-  <polyline class="line" points="64.00,304.00 112.00,304.00 160.00,300.03 208.00,300.03 256.00,298.05 304.00,296.06 352.00,282.17 400.00,272.25 448.00,272.25 496.00,272.25 544.00,272.25 592.00,272.25 640.00,270.27 688.00,190.90 736.00,190.90 784.00,190.90 832.00,188.91 880.00,186.93 928.00,107.56 976.00,52.00"/>
+  <path d="M 64.00 304 L 64.00 304.00 L 109.60 304.00 L 155.20 300.03 L 200.80 300.03 L 246.40 298.05 L 292.00 296.06 L 337.60 282.17 L 383.20 272.25 L 428.80 272.25 L 474.40 272.25 L 520.00 272.25 L 565.60 272.25 L 611.20 270.27 L 656.80 190.90 L 702.40 190.90 L 748.00 190.90 L 793.60 188.91 L 839.20 186.93 L 884.80 107.56 L 930.40 52.00 L 976.00 52.00 L 976.00 304 Z" fill="url(#fill-monthly-black)"/>
+  <polyline class="line" points="64.00,304.00 109.60,304.00 155.20,300.03 200.80,300.03 246.40,298.05 292.00,296.06 337.60,282.17 383.20,272.25 428.80,272.25 474.40,272.25 520.00,272.25 565.60,272.25 611.20,270.27 656.80,190.90 702.40,190.90 748.00,190.90 793.60,188.91 839.20,186.93 884.80,107.56 930.40,52.00 976.00,52.00"/>
   <circle class="dot" cx="976.00" cy="52.00" r="4.5"/>
   
   <text class="axis" x="64.00" y="336" text-anchor="start">2026-10-07</text>
-  <text class="axis" x="208.00" y="336" text-anchor="middle">2026-10-11</text>
-  <text class="axis" x="352.00" y="336" text-anchor="middle">2026-10-14</text>
-  <text class="axis" x="496.00" y="336" text-anchor="middle">2026-10-17</text>
-  <text class="axis" x="640.00" y="336" text-anchor="middle">2026-10-20</text>
-  <text class="axis" x="784.00" y="336" text-anchor="middle">2026-10-23</text>
-  <text class="axis" x="928.00" y="336" text-anchor="middle">2026-10-26</text>
-  <text class="axis" x="976.00" y="336" text-anchor="end">2026-10-27</text>
+  <text class="axis" x="246.40" y="336" text-anchor="middle">2026-10-12</text>
+  <text class="axis" x="428.80" y="336" text-anchor="middle">2026-10-16</text>
+  <text class="axis" x="611.20" y="336" text-anchor="middle">2026-10-20</text>
+  <text class="axis" x="793.60" y="336" text-anchor="middle">2026-10-24</text>
+  <text class="axis" x="976.00" y="336" text-anchor="end">2026-10-28</text>
   <text class="latest" x="976" y="34" text-anchor="end">Latest month: 127</text>
 </svg>
