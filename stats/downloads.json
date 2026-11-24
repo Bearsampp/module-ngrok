@@ -3,12 +3,12 @@
   "owner": "Bearsampp",
   "repo": "module-ngrok",
   "visibility": "public",
-  "generatedAt": "2026-11-23T06:12:46.466Z",
+  "generatedAt": "2026-11-24T08:48:54.588Z",
   "stats": {
-    "total": 1123,
-    "day": 1,
+    "total": 1151,
+    "day": 28,
     "week": 143,
-    "month": 423
+    "month": 450
   },
   "partial": {
     "day": false,
@@ -17,9 +17,9 @@
   },
   "snapshots": {
     "windowDays": 180,
-    "count": 47,
+    "count": 48,
     "firstDate": "2026-10-07",
-    "lastDate": "2026-11-23",
+    "lastDate": "2026-11-24",
     "series": {
       "2026-10-07": 642,
       "2026-10-08": 642,
@@ -67,7 +67,8 @@
       "2026-11-20": 1066,
       "2026-11-21": 1094,
       "2026-11-22": 1122,
-      "2026-11-23": 1123
+      "2026-11-23": 1123,
+      "2026-11-24": 1151
     }
   },
   "profile": {
